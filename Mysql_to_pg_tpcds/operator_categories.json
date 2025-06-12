@@ -1,0 +1,24 @@
+{
+    "executed": [
+        "Covering index scan",
+        "Limit",
+        "Materialize with deduplication",
+        "Nested loop left join",
+        "Materialize",
+        "Aggregate",
+        "Index lookup",
+        "Nested loop semijoin",
+        "Single-row index lookup",
+        "Filter",
+        "Nested loop antijoin",
+        "Covering index lookup",
+        "Sort",
+        "Stream results",
+        "Nested loop inner join",
+        "Aggregate using temporary table",
+        "Index scan",
+        "Index range scan",
+        "Table scan"
+    ],
+    "not_executed": []
+}
