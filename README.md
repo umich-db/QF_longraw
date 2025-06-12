@@ -1,4 +1,5 @@
-# QF_longraw (MySQL, DuckDB, Spark)
+# QF_longraw
+## Currently written for MySQL, DuckDB, Spark
 Code for generating long_raw.csv for QueryFormer (to match the PostgreSQL EXPLAIN ANALYZE output format)
 
 To run the scripts: (Change  `tpcds` to `tpch` if needed)
