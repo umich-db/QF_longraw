@@ -1,13 +1,12 @@
 '''
-{TPCDS} Convert 2200 json&txt files (but only extracting txt parts) to a single csv file with [id, json] 
+Convert MySQL EXPLAIN ANALYZE json&txt files (but only extracting txt parts) to a single csv file with [id, json] 
 '''
 
 # Define the input folder (where .txt files are located) and the output folder (for .json files)
-# input_folder = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Spark_tpch/results'
-# output_csv_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/QueryFormer/data/tpch_2505/spark_10g/long_raw.csv'
+# input_folder = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Mysql_tpcds'
+# output_csv_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/QueryFormer/data/tpcds_2505/mysql_10g/long_raw.csv'
 # op_categories_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Mysql_tpcds/operator_categories.json'
 
-import traceback
 import os
 import sys
 import json
@@ -16,11 +15,10 @@ from copy import deepcopy
 import re
 import shutil
 
-from node import Node
-from merge_explain_outputs import merge_explain_outputs
+from parsers.ms_node import Node, merge_explain_outputs
 
 # sys.path.append(os.path.expanduser('~/Oct/src'))
-import utils_ms as utils_ms
+import parsers.utils_ms as utils_ms
 
 # some constant key names
 CHILDREN_KEY = "children"
@@ -83,11 +81,11 @@ def update_looped_values(plan_node):
         if plan_node.extracted_data.get(key) is not None:
             plan_node.extracted_data[key] *= plan_node.extracted_data[ACTUAL_LOOPS_KEY]
 
-def update_operator_runtime(plan_node):
+def update_operator_runtime(plan_node, op_categories):
     #^ post-order traversal 
     # process the children
     for subplan in plan_node.children:
-        update_operator_runtime(plan_node=subplan)
+        update_operator_runtime(plan_node=subplan, op_categories=op_categories)
 
     # process the root node
     # calculate startup times and total time
@@ -96,33 +94,37 @@ def update_operator_runtime(plan_node):
     # print(f"op_name: {op_name}")
     # print(f"table: {table}")
 
+
     # for not-executed nodes
-    if "never executed" in plan_node.extracted_data[OPERATOR_KEY]:
+    if op_name in op_categories[NOT_EXE_KEY] or "never executed" in plan_node.extracted_data[OPERATOR_KEY]:
+        # runtime and start_time set to 0.0
         plan_node.extracted_data[OP_TIME_KEY] = 0.0
         plan_node.extracted_data[OP_TIME_START_KEY] = 0.0
-        subplan_total_time = sum(
-            subplan.extracted_data.get(OP_TIME_END_KEY, 0.0) or 0.0
-            for subplan in plan_node.children
-        )
+        # total time is the sum of all child subplans' total runtime (namely, assume no parallelism)
+        subplan_total_time = sum([subplan.extracted_data[OP_TIME_END_KEY] for subplan in plan_node.children]) if (len(plan_node.children) > 0) else 0.0
         plan_node.extracted_data[OP_TIME_END_KEY] = subplan_total_time
         return
 
     # for executed nodes
     try:
-        actual_time_start = float(plan_node.extracted_data.get(ACTUAL_TIME_START_KEY, 0.0) or 0.0)
-        actual_time_end = float(plan_node.extracted_data.get(ACTUAL_TIME_END_KEY, 0.0) or 0.0)
-        loops = float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1.0) or 1.0)
-
+        actual_time_start = float(plan_node.extracted_data.get(ACTUAL_TIME_START_KEY, 0.0))
+        actual_time_end = float(plan_node.extracted_data.get(ACTUAL_TIME_END_KEY, 0.0))
+        loops = float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1.0))
+        
         # print(f"Actual start time: {actual_time_start}, Actual end time: {actual_time_end}, Loops: {loops}")
 
         # Calculate operator time considering loops
         plan_node.extracted_data[OP_TIME_START_KEY] = actual_time_start * loops
         plan_node.extracted_data[OP_TIME_END_KEY] = actual_time_end * loops
 
-        subplan_total_time = sum([subplan.extracted_data.get(OP_TIME_END_KEY, 0.0) or 0.0 for subplan in plan_node.children])
+        # print(f"Calculated OP_TIME_START: {plan_node.extracted_data[OP_TIME_START_KEY]}")
+        # print(f"Calculated OP_TIME_END: {plan_node.extracted_data[OP_TIME_END_KEY]}")
+
+        # Sum of subplan (child) execution times
+        subplan_total_time = sum([subplan.extracted_data[OP_TIME_END_KEY] for subplan in plan_node.children]) if plan_node.children else 0.0
 
         # Calculate operator's execution time (subtract child execution time from total)
-        plan_node.extracted_data[OP_TIME_KEY] = max(0.0, plan_node.extracted_data[OP_TIME_END_KEY] - subplan_total_time)
+        plan_node.extracted_data[OP_TIME_KEY] = plan_node.extracted_data[OP_TIME_END_KEY] - subplan_total_time
 
         # print(f"Subplan total time: {subplan_total_time}")
         # print(f"Operator time for {op_name} (excluding children): {plan_node.extracted_data[OP_TIME_KEY]}")
@@ -133,12 +135,15 @@ def update_operator_runtime(plan_node):
         if table is not None:
             plan_node.extracted_data[utils_ms.TABLE_NAME_KEY] = table
 
-    except Exception as e:
-        print("ERROR in update_operator_runtime:")
-        print(f"  Plan Node: {plan_node.data}")
-        print(f"  Extracted Data: {plan_node.extracted_data}")
-        traceback.print_exc()  # Prints the traceback with line number
-        raise  # re-raise if you want it to crash, or comment this to continue silently
+        # plan_node.extracted_data[OP_TIME_START_KEY] = float(plan_node.extracted_data.get(ACTUAL_TIME_START_KEY, 0)) * float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1))
+        # plan_node.extracted_data[OP_TIME_END_KEY] = float(plan_node.extracted_data.get(ACTUAL_TIME_END_KEY, 0)) * float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1))
+        # subplan_total_time = sum([subplan.extracted_data[OP_TIME_END_KEY] for subplan in plan_node.children]) if (len(plan_node.children) > 0) else 0.0
+        # plan_node.extracted_data[OP_TIME_KEY] = plan_node.extracted_data[OP_TIME_END_KEY] - subplan_total_time
+        # plan_node.extracted_data[OPERATOR_KEY] = op_name
+        # if table is not None:
+        #     plan_node.extracted_data[utils_ms.TABLE_NAME_KEY] = table
+    except KeyError as e:
+        raise KeyError(f"error key: {e}, plan:\n{plan_node.data}") from e
 
 def update_input_rows(plan_node):
     for subplan in plan_node.children:
@@ -168,369 +173,171 @@ def update_operator_cost(plan_node):
         plan_node.extracted_data[utils_ms.OP_COST_KEY] = plan_node.extracted_data[utils_ms.COST_KEY] - sum([null_to_zero(subplan.extracted_data.get(utils_ms.COST_KEY, 0)) for subplan in plan_node.children])
 
 
-class PlanParser():
+class MysqlPlanParser():
     def __init__(self, op_categories):
         self.op_categories_ = op_categories
 
     def parse_one_plan(self, plan_chuck: str):
         def merge_stack(stack, stop_indent_level):
-            '''Merge an incremental stack of (node, indent) pairs'''
-            children_buffer = []
-            print(f"\n merge_stack called with stop_indent_level={stop_indent_level}")
-            print(" Current stack BEFORE merging:")
-            for i, (node, indent) in enumerate(stack):
-                print(f"  [{i}] {node.extracted_data[OPERATOR_KEY]} (indent={indent})")
-
-            while len(stack) >= 2 and stack[-1][1] > stop_indent_level:
-                top = stack.pop()
+            '''merge an incremental stack of (node, indent) pair
+            '''
+            children_buffer = [] # storing children for parents
+            # print(f"Starting merge_stack with stop_indent_level={stop_indent_level}")
+            # print(f"Initial stack (before merging):")
+            # for idx, (node, indent) in enumerate(stack):
+            #     print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
+        
+            while (len(stack) >= 2 and stack[-1][1] > stop_indent_level): # stop when stack is small or already merged at required indent level
+                top = stack[-1]; stack.pop()
                 children_buffer.insert(0, top[0])
-                print(f"  Merging: {top[0].extracted_data[OPERATOR_KEY]} (Indent Level: {top[1]})")
+                # print(f"  Merging: {top[0].extracted_data['operator']} (Indent Level: {top[1]})")
 
-                if stack[-1][1] > top[1]:
+                if (stack[-1][1] > top[1]):
                     raise ValueError("children node cannot have smaller indentation!")
-                elif stack[-1][1] == top[1]:
+                elif (stack[-1][1] == top[1]): # siblings
                     continue
-                else:  # parent
+                else: # parent
                     stack[-1][0].children = deepcopy(children_buffer)
                     children_buffer.clear()
+            # print(f"Stack after merging:")
+            # for idx, (node, indent) in enumerate(stack):
+            #     print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
+            # print("\n")
 
-            print(" Current stack AFTER merging:")
-            for i, (node, indent) in enumerate(stack):
-                print(f" {node.extracted_data[OPERATOR_KEY]} (indent={indent})")
-            print("")
-
-        '''Parse a single plan chunk'''
-
-        lines = plan_chuck.explain_analyze_output.replace('\\n', '\n').splitlines()
-
-        print(f"Line 208, lines: {lines}")
-        # If the first line does not start with indentation or '+-', treat it as the root
-        if lines and not lines[0].lstrip().startswith("+-") and not lines[0].startswith(" "):
-            root_line = lines[0]
-            lines[0] = "+- " + root_line  # artificially mark as plan root with indent token
-            print(f"lines[0]:{lines[0]}")
-        
-        print(f"\n==== DEBUG: Raw plan lines ====")
-        for i, line in enumerate(lines):
-            print(f"[{i}] {line}")
-        print("==== End of plan lines ====\n")
-
+        '''parse on plan chunks '''
+        lines = plan_chuck.replace('\\n', '\n').splitlines()
         stack = deque()
+        for line in lines:
+            line = line.rstrip()  # Remove leading and trailing spaces
+            if line == "":
+                # print("Skipping empty line.")
+                continue  # Skip empty lines
 
-        
-        for i, line in enumerate(lines):
-            line = line.rstrip()
-            if line == "" or "EXPLAIN" in line:
-                continue  # Skip empty or header lines
+            # print(f"Curr line: {line}")
+            if ("EXPLAIN" in line):
+                continue
 
-            # Count indentation by leading spaces before '+-'
-            # leading_spaces = len(line) - len(line.lstrip(' '))
-            # this_indent_level = leading_spaces // 2  # Adjust if your indent spacing differs
-
-            # For Spark: Strip '+-' prefix and count the leading spaces
-            # Count indentation level based on position of '+-'
-            original_line = line
-            prefix_match = re.search(r'^(\s*)(\+|-|:|:-)', original_line)
-
-            if prefix_match:
-                prefix = prefix_match.group(1)
-                # Assume each level is 2 spaces (or '  ')
-                this_indent_level = len(prefix) // 2
-            else:
-                this_indent_level = 0  # root-level operator
-
-            # Strip the '+-' and leading spaces for clean operator line
-            line = re.sub(r'^\s*[:\+\-=\s]+', '', line)
-
-            print(f"Processing line [{i}] (indent={this_indent_level}): {line}")
-
-            # Extract operator name and details
-            op_match = re.match(r'([A-Za-z0-9_]+)\s*(.*)', line)
-            if op_match:
-                op_name = op_match.group(1)
-                op_details = op_match.group(2).strip()
-            else:
-                op_name = line
-                op_details = ""
-
-            print(f"\n  -> Extracted op_name: '{op_name}', op_details: '{op_details}'")
-
-            # Create Node
-            print("DEBUG: Before Node creation")
+            # count the indentation, decide whether it's a sibling or child
+            # this_indent_level = len(line) - len(line.lstrip(' \t')) # count of indentations ahead
+            
+            leading_spaces = len(line) - len(line.lstrip(' '))
+            leading_tabs = len(line) - len(line.lstrip('\t'))
+            this_indent_level = leading_spaces + (leading_tabs * 4)  # Assume tabs count as 4 spaces
             this_node = Node(line.strip())
-            print("DEBUG: After Node creation")
 
-            this_node.extracted_data[OPERATOR_KEY] = op_name
-            this_node.extracted_data['op_details'] = op_details
-
-            # Merge if necessary
-            print("\nCurrent Stack:")
-            for idx, (node, indent) in enumerate(stack):
-                print(f"  Stack[{idx}] -> Node: {node.extracted_data[OPERATOR_KEY]} (Indent Level: {indent})")
-
-            if len(stack) > 0:
+            # print("Current Stack:")
+            # for idx, (node, indent) in enumerate(stack):
+                # print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
+                
+            if (len(stack) > 0):
                 prev_indent_level = stack[-1][1]
-                if prev_indent_level > this_indent_level:
-                    print("\n==== PARSE_ONE_PLAN DEBUG ====")
-                    print(f"Current line: '{line}'")
-                    print(f"  This indent level: {this_indent_level}")
-                    print(f"  Stack before merge_stack: {[ (n.extracted_data[OPERATOR_KEY], ind) for n, ind in stack ]}")
-
+                if prev_indent_level > this_indent_level : # stack top is a child of its sibling among the stack
+                    # keep merging the stack from top until find the sibling 
                     merge_stack(stack, this_indent_level)
-
-                    if not stack:
-                        raise ValueError(f"Stack unexpectedly empty after merging! Line: '{line}' (indent={this_indent_level})")
-
-                stack.append((this_node, this_indent_level))
-            else:
                 stack.append((this_node, this_indent_level))
 
-            print("Updated Stack After Line:")
-            for idx, (node, indent) in enumerate(stack):
-                print(f"  Stack[{idx}] -> Node: {node.extracted_data[OPERATOR_KEY]} (Indent Level: {indent})")
-            print("\n")
+            else: # entry point 
+                stack.append((this_node, this_indent_level))
 
-        # Final merge for remaining stack
+            # Visualize the updated stack after each line is processed
+            # print("Updated Stack After Line:")
+            # for idx, (node, indent) in enumerate(stack):
+            #     print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
+            # print("\n")
+
+        # merge the rest of the nodes in stack
         merge_stack(stack, 0)
-
-        if len(stack) >= 2:
+        # check validity of stack
+        if (len(stack) >= 2):
+            # print(stack)
             raise ValueError("length of output stack shouldn't be more than 1!")
-        elif len(stack) == 0:
+        elif (len(stack) == 0):
             raise ValueError("Empty stack! Impossible unless the file is empty")
-
+        
         update_looped_values(stack[0][0])
-        update_operator_runtime(stack[0][0])
+        update_operator_runtime(stack[0][0], self.op_categories_) #^ calculate the each operator runtime and add to the data dict
         update_input_rows(stack[0][0])
         update_operator_cost(stack[0][0])
-
         return stack[0][0]
 
-class PlanChuck:
+class MysqlPlanChuck:
     def __init__(self, raw_string):
-        lines = raw_string.strip().splitlines()
-        self.root_line = None
-
-        if lines and not lines[0].lstrip().startswith("+-") and not lines[0].startswith(" "):
-            self.root_line = lines[0]
-            lines[0] = "+- " + self.root_line  # Mark root
-
-            # Manually indent the first child (if it exists)
-            for i in range(1, len(lines)):
-                if lines[i].lstrip().startswith("+-"):
-                    lines[i] = "  " + lines[i]
-                    # print(f"{lines}")
-        
-        self.tree_lines = lines
-        self.explain_analyze_output = "\n".join(self.tree_lines)
-
-        # Debug output (optional)
-        print(f"\n[PlanChuck] Final tree lines:")
-        for i, line in enumerate(self.tree_lines):
-            print(f"[{i}] {line}")
+        # raw_string should contain EXPLAIN\n{...json}\nEXPLAIN\n->query plan nodes
+        # split at second EXPLAIN (stores index of second "EXPLAIN")
+        # split = [_ for _ in re.finditer('EXPLAIN', raw_string)][1].start()
+        # self.explain_output = raw_string[:split]
+        # self.explain_analyze_output = raw_string[split:]
+        self.explain_output = None
+        self.explain_analyze_output = raw_string
 
             
-# class MysqlExplainParser():
-#     raw_plan_list: list[MysqlPlanChuck]
+class MysqlExplainParser():
+    raw_plan_list: list[MysqlPlanChuck]
 
-#     def __init__(self, op_categories):
-#         self.raw_plan_list = []
-#         self.parsed_plan_list = None # list of root nodes, each representing a query plan
-#         self.plan_parser = MysqlPlanParser(op_categories=op_categories)
+    def __init__(self, op_categories):
+        self.raw_plan_list = []
+        self.parsed_plan_list = None # list of root nodes, each representing a query plan
+        self.plan_parser = MysqlPlanParser(op_categories=op_categories)
     
-#     def load_raw_plans(self, filename):
-#         ''' Extracts the second EXPLAIN block (everything after the second EXPLAIN) '''
-#         with open(filename, 'r') as infile:
-#             content = infile.read()
-            
-#             # Find all occurrences of "EXPLAIN" in the file
-#             explain_matches = [m.start() for m in re.finditer(r'EXPLAIN', content)]
-            
-#             if len(explain_matches) < 2:
-#                 raise ValueError(f"File {filename} does not contain at least two EXPLAIN sections.")
-            
-#             # Extract everything after the second EXPLAIN
-#             second_explain_pos = explain_matches[1]
-#             explain_block = content[second_explain_pos:]
-            
-#             # Split the remaining block into separate plans if needed
-#             out_list = explain_block.split('\n\n')  # This remains unchanged
-#             self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
-        
-#         # ''' splits original files into chucks, each chuck refers to one plan. Return the list of chunks
-#         # '''
-#         # # print(f"Loading file: {filename}")
-#         # with open(filename, 'r') as infile:
-#         #     content = infile.read()
-#         #     out_list = content.split('\n\n')
-#         #     self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
-        
-#         # # for i, plan_chunk in enumerate(self.raw_plan_list[:5]):  # Limit the output to first 5 chunks for brevity
-#         # #     print(f"Plan chunk {i+1}:\n{plan_chunk.explain_analyze_output}...\n")  
-   
-
-#     def parse_explain_output(self, explain_output):
-#         # Assume first line contains EXPLAIN, rest is valid JSON
-#         explain_output = explain_output.split('\n', 1)[1]
-#         return json.loads(explain_output)
-
-#     def parse_raw_plans(self):
-#         if (len(self.raw_plan_list) == 0):
-#             # print("Plan list is empty! Load the plan from file first!")
-#             return
-#         self.parsed_plan_list = []
-#         for plan in self.raw_plan_list:
-#             # explain_output = self.parse_explain_output(plan.explain_output)
-#             explain_output = {}
-#             plan_node = self.plan_parser.parse_one_plan(plan.explain_analyze_output)
-#             self.parsed_plan_list.append(merge_explain_outputs(explain_output, plan_node))
-
-#     # def print_raw_plans(self):
-#     #     for i, plan_txt in enumerate(self.raw_plan_list):
-#     #         print(f"section {i}:")
-#     #         print(plan_txt)
-
-#     # def print_parsed_plans(self):
-#     #     for i, plan_tree in enumerate(self.parsed_plan_list):
-#     #         print(f"section {i}:")
-#     #         print(plan_tree)
-def parse_spark_stats_block(stats_text):
-    """
-    Parses the StatsOutput block from Spark and returns a list of dicts.
-    """
-    stats_list = []
-    pattern = re.compile(r'(\w+)\s+estimated row count: (\w+), size in bytes: (\d+)')
-    for line in stats_text.strip().splitlines():
-        match = pattern.search(line)
-        if match:
-            node_type = match.group(1)
-            row_count = match.group(2)
-            size_bytes = int(match.group(3))
-            plan_rows = None if row_count == "unknown" else int(row_count)
-            stats_list.append({
-                "node_type": node_type,
-                "plan_rows": plan_rows,
-                "estimated_size_bytes": size_bytes
-            })
-    return stats_list
-
-class SparkExplainParser():
-    def __init__(self):
-        self.raw_plan_list = []      # List of MysqlPlanChuck, each holds raw plan text
-        self.parsed_plan_list = []   # List of parsed plan trees (Node objects)
-        self.stats_list = []         # List of dicts: {'node_type': ..., 'plan_rows': ..., 'estimated_size_bytes': ...}
-        self.execution_time = 0.0
-
-        # Initialize the Spark-specific plan parser
-        self.plan_parser = PlanParser(op_categories=None)  # op_categories not needed for Spark
-
     def load_raw_plans(self, filename):
-        """
-        For Spark: splits file into header (time cost), plan tree, and statsOutput.
-        Stores the plan tree text and stats info.
-        """
+        ''' Extracts the second EXPLAIN block (everything after the second EXPLAIN) '''
         with open(filename, 'r') as infile:
             content = infile.read()
-
-        # Split into plan and stats sections
-        parts = content.split("statsOutput:")
-        if len(parts) != 2:
-            raise ValueError(f"File {filename} does not contain 'statsOutput' section.")
-
-        plan_part, stats_part = parts
-        plan_lines = plan_part.strip().splitlines()
-                
-        # Find where the plan tree starts (the first line with "+-")
-        tree_start_idx = None
-        for idx, line in enumerate(plan_lines):
-            if line.lstrip().startswith("+-"):
-                tree_start_idx = idx
-                break
-
-        if tree_start_idx is None:
-            raise ValueError(f"Cannot find a plan tree (lines starting with '+-') in file {filename}")
-
-        if tree_start_idx > 0:
-            root_line = plan_lines[tree_start_idx - 1]
-            # print(f"root_line:{root_line}")
-            plan_tree_text = root_line + '\n' + '\n'.join(plan_lines[tree_start_idx:])
-            # print(f"\n On line 433, plan_tree_text:{plan_tree_text}")
-        else:
-            plan_tree_text = '\n'.join(plan_lines[tree_start_idx:])
             
-        # plan_tree_text = '\n'.join(plan_lines[tree_start_idx:])
-        print(f"In load_raw_plans, plan_tree_text:{plan_tree_text}")
-        self.raw_plan_list = [PlanChuck(plan_tree_text)]
-        self.stats_list = parse_spark_stats_block(stats_part.strip())
-        self.execution_time = extract_total_execution_time_spark(filename)
+            # Find all occurrences of "EXPLAIN" in the file
+            explain_matches = [m.start() for m in re.finditer(r'EXPLAIN', content)]
+            
+            if len(explain_matches) < 2:
+                raise ValueError(f"File {filename} does not contain at least two EXPLAIN sections.")
+            
+            # Extract everything after the second EXPLAIN
+            second_explain_pos = explain_matches[1]
+            explain_block = content[second_explain_pos:]
+            
+            # Split the remaining block into separate plans if needed
+            out_list = explain_block.split('\n\n')  # This remains unchanged
+            self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
+        
+        # ''' splits original files into chucks, each chuck refers to one plan. Return the list of chunks
+        # '''
+        # # print(f"Loading file: {filename}")
+        # with open(filename, 'r') as infile:
+        #     content = infile.read()
+        #     out_list = content.split('\n\n')
+        #     self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
+        
+        # # for i, plan_chunk in enumerate(self.raw_plan_list[:5]):  # Limit the output to first 5 chunks for brevity
+        # #     print(f"Plan chunk {i+1}:\n{plan_chunk.explain_analyze_output}...\n")  
+   
+
+    def parse_explain_output(self, explain_output):
+        # Assume first line contains EXPLAIN, rest is valid JSON
+        explain_output = explain_output.split('\n', 1)[1]
+        return json.loads(explain_output)
 
     def parse_raw_plans(self):
-        """
-        Parses the raw plan text into tree structures and attaches stats.
-        """
-        if len(self.raw_plan_list) == 0:
-            print("Plan list is empty! Load the plan from file first!")
+        if (len(self.raw_plan_list) == 0):
+            # print("Plan list is empty! Load the plan from file first!")
             return
-
         self.parsed_plan_list = []
-
         for plan in self.raw_plan_list:
-            print(f"In parse_raw_plan(), plan:{plan}")
-            # Parse the plan text into a tree of Nodes
-            plan_node = self.plan_parser.parse_one_plan(plan)
+            # explain_output = self.parse_explain_output(plan.explain_output)
+            explain_output = {}
+            plan_node = self.plan_parser.parse_one_plan(plan.explain_analyze_output)
+            self.parsed_plan_list.append(merge_explain_outputs(explain_output, plan_node))
 
-            # Attach stats (Plan Rows, Estimated Size) to nodes
-            attach_stats_to_plan(plan_node, self.stats_list)
+    # def print_raw_plans(self):
+    #     for i, plan_txt in enumerate(self.raw_plan_list):
+    #         print(f"section {i}:")
+    #         print(plan_txt)
 
-            self.parsed_plan_list.append(plan_node)
-
-# Helper function: attaches stats to plan nodes
-def attach_stats_to_plan(plan_node, stats_list):
-    """
-    Traverses the plan tree in pre-order and attaches 'Plan Rows' and 'Estimated Size' from Spark stats.
-    Ensures one-to-one mapping between nodes and stats.
-    """
-    def flatten_preorder(node):
-        result = [node]
-        for child in node.children:
-            result.extend(flatten_preorder(child))
-        return result
-
-    # Flatten the plan tree
-    flat_nodes = flatten_preorder(plan_node)
-
-    if len(flat_nodes) != len(stats_list):
-        print(f"Warning: Node count ({len(flat_nodes)}) != stats count ({len(stats_list)}). Proceeding with min(len(flat_nodes), len(stats_list)).")
-
-    for node, stats in zip(flat_nodes, stats_list):
-        node.extracted_data['plan_rows'] = stats['plan_rows']
-        node.extracted_data['estimated_size_bytes'] = stats['estimated_size_bytes']
-        node.extracted_data['input_rows'] = stats['plan_rows'] if stats['plan_rows'] is not None else 1.0
-
-    # Check if any stats are left
-    remaining_stats = len(stats_list) - len(flat_nodes)
-    if remaining_stats > 0:
-        print(f"Warning: {remaining_stats} stats entries were not used.")
-    elif len(flat_nodes) > len(stats_list):
-        print(f"Warning: {len(flat_nodes) - len(stats_list)} plan nodes did not get stats assigned.")
+    # def print_parsed_plans(self):
+    #     for i, plan_tree in enumerate(self.parsed_plan_list):
+    #         print(f"section {i}:")
+    #         print(plan_tree)
 
 
-
-def extract_total_execution_time_spark(filepath):
-    """
-    Extracts total execution time from Spark query plan file.
-    Example line: 'time cost: 11585 ms'
-    """
-    with open(filepath, 'r') as f:
-        content = f.read()
-    
-    match = re.search(r'time cost:\s*([\d\.]+)\s*ms', content)
-    if match:
-        return float(match.group(1))
-    else:
-        print(f"Warning: Could not find 'time cost' in file {filepath}. Defaulting to 0.0 ms.")
-        return 0.0  # Fallback if not found
-    
-def add_total_execution_time(plan_json, filepath):
+def add_total_execution_time(plan_json):
     """
     Given a query plan (parsed JSON), this function extracts the total execution
     time from the root node and adds it to the JSON output.
@@ -539,11 +346,8 @@ def add_total_execution_time(plan_json, filepath):
     root_node = plan_json['data']
     
     # Directly use the total time of the root node as the total execution time
-    # total_execution_time = root_node.get(OP_TIME_END_KEY, 0)
+    total_execution_time = root_node.get(OP_TIME_END_KEY, 0)
 
-    # For Spark
-    total_execution_time = extract_total_execution_time_spark(filepath)
-    
     # Add total execution time to the root node's data
     root_node['total_execution_time'] = total_execution_time
     # plan_json["Execution Time"] = total_execution_time
@@ -564,16 +368,16 @@ def fill_missing_hash_node_values(plan):
     if plan.get("Node Type") in ["Hash", "Aggregate", "Materialize", "Sort"]:
         if plan.get("Actual Startup Time") is None and plan.get("Plans"):
             # Use the startup time from the first child if available
-            plan["Actual Startup Time"] = plan["Plans"][0].get("Actual Startup Time") or 0.0
+            plan["Actual Startup Time"] = plan["Plans"][0].get("Actual Startup Time", 0.0)
 
         if plan.get("Actual Total Time") is None and plan.get("Plans"):
             plan["Actual Total Time"] = sum(
-                child.get("Actual Total Time") or 0.0 for child in plan["Plans"]
+                child.get("Actual Total Time", 0.0) for child in plan["Plans"]
             )
 
         if plan.get("Actual Rows") is None and plan.get("Plans"):
             plan["Actual Rows"] = max(
-                child.get("Actual Rows") or 0.0 for child in plan["Plans"]
+                child.get("Actual Rows", 0.0) for child in plan["Plans"]
             )
 
         if plan.get("Actual Loops") is None:
@@ -615,10 +419,7 @@ def transform_to_postgres_style(json_data):
             transformed["Total Cost"] = node["data"]["operator_estimate_cost"]
         if node["data"].get("input_rows"):
             transformed["Plan Rows"] = node["data"]["input_rows"]
-        if node["data"].get("plan_rows") is not None:
-            transformed["Plan Rows"] = node["data"]["plan_rows"]
-        # print(f" [06/11] Updated Plan Rows for root node: {plan['Plan'].get('Plan Rows', 'N/A')}")
-
+        
 
          # Change Filter to Sort Key if Node Type is "Sort"
         if transformed["Node Type"] == "Sort" and "Filter" in transformed:
@@ -827,47 +628,37 @@ def remove_angle_bracket_content(plan):
 
     return plan
 
-# #^ payload
-def spark_raw_txt_to_json(infilepath):
-    # Initialize Spark parser
-    parser = SparkExplainParser()
-
-    # Load raw plan text
+#^ payload     
+def mysql_raw_txt_to_json(infilepath, op_categories_path):
+    # load operator categories
+    with open(op_categories_path, 'r', encoding='utf-8') as infile:
+        op_categories = json.load(infile)
+    # init the file parser
+    parser = MysqlExplainParser(op_categories=op_categories)
+    # load raw plan text
     parser.load_raw_plans(infilepath)
-
-    # Parse the text into trees
+    # parse the text into trees
     parser.parse_raw_plans()
+
 
     # Save each parsed plan after calculating total execution time
     all_queries_execution_time = []
-
+    
     for root in parser.parsed_plan_list:
-        root_with_time = add_total_execution_time(root.to_json(), infilepath)
+        root_with_time = add_total_execution_time(root.to_json())
         postgres_style_plan = transform_to_postgres_style(root_with_time)
         cleaned_plan = remove_specific_filter_nodes(postgres_style_plan['Plan'])
         merged_plan = merge_filter_and_scan_nodes_recursive(cleaned_plan)
         filled_plan = fill_missing_parts(merged_plan)
         cleaned_filled_plan = remove_angle_bracket_content(filled_plan)
 
+        # all_queries_execution_time.append({"Plan": merged_plan})
         all_queries_execution_time.append({
-            "Plan": cleaned_filled_plan,
+            "Plan": filled_plan,
             "Execution Time": postgres_style_plan["Execution Time"]
         })
-
+    
     return all_queries_execution_time
-     
-def replace_null_with_zero(obj):
-    """
-    Recursively replace all None values with 0.0 in a nested dict or list.
-    """
-    if isinstance(obj, dict):
-        return {k: replace_null_with_zero(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [replace_null_with_zero(elem) for elem in obj]
-    elif obj is None:
-        return 0.0
-    else:
-        return obj
 
 
 import os
@@ -875,9 +666,8 @@ from tqdm import tqdm
 import csv
 from collections import defaultdict
 
-
 import argparse
-def process_files(input_folder, output_csv_path, template_range=(1, 101), query_range=(1, 11)):
+def process_files(input_folder, output_csv_path, op_categories_path, template_range=(1, 101), query_range=(1, 11)):
     output_dir = os.path.dirname(output_csv_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -899,6 +689,8 @@ def process_files(input_folder, output_csv_path, template_range=(1, 101), query_
                 continue
 
             for query in range(*query_range):
+                print(f"template:{template}, query:{query}")
+
                 filename = f"{template}_{query}_run0.txt"
                 txt_src_path = os.path.join(input_folder, filename)
 
@@ -907,24 +699,33 @@ def process_files(input_folder, output_csv_path, template_range=(1, 101), query_
                     continue
 
                 try:
-                    result = spark_raw_txt_to_json(txt_src_path)
+                    result = mysql_raw_txt_to_json(
+                        infilepath=txt_src_path,
+                        op_categories_path=op_categories_path
+                    )
+
                     for plan in result:
-                        cleaned_plan = replace_null_with_zero(plan)
-                        writer.writerow([id_counter, json.dumps(cleaned_plan)])
+                        writer.writerow([id_counter, json.dumps(plan)])
                         id_counter += 1
+
                 except Exception as e:
                     templates_with_errors.add(template)
                     print(f"Error processing {filename}: {e}")
-                    traceback.print_exc()
+                    # traceback.print_exc()
 
-    # Reporting
     print("\n\nSummary Report:")
     if missing_templates:
         print(f"\nMissing Templates: {missing_templates}")
+    else:
+        print("\nNo templates are missing.")
+
     if missing_queries:
         print("\nMissing Queries per Template:")
         for template, queries in missing_queries.items():
             print(f"  Template {template}: Missing Queries: {queries}")
+    else:
+        print("\nNo individual queries are missing.")
+
     if templates_with_errors:
         print(f"\nTemplates with Errors: {sorted(templates_with_errors)}")
     else:
@@ -932,9 +733,10 @@ def process_files(input_folder, output_csv_path, template_range=(1, 101), query_
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Convert Spark TPC-DS .txt explain outputs to CSV with JSON plans")
-    parser.add_argument('--input_folder', type=str, default='.', help='Directory with .txt explain output files')
-    parser.add_argument('--output_csv_path', type=str, default='./output.csv', help='Path to output CSV file')
+    parser = argparse.ArgumentParser(description="Convert MySQL TPC-DS .txt explain outputs to CSV with JSON plans")
+    parser.add_argument('--input_folder', type=str, required=True, help='Directory with .txt explain output files')
+    parser.add_argument('--output_csv_path', type=str, required=True, help='Path to output CSV file')
+    parser.add_argument('--op_categories_path', type=str, required=True, help='Path to operator categories JSON file')
     parser.add_argument('--template_start', type=int, default=1, help='Start of template range (inclusive)')
     parser.add_argument('--template_end', type=int, default=101, help='End of template range (exclusive)')
     parser.add_argument('--query_start', type=int, default=1, help='Start of query range (inclusive)')
@@ -945,6 +747,7 @@ if __name__ == '__main__':
     process_files(
         input_folder=args.input_folder,
         output_csv_path=args.output_csv_path,
+        op_categories_path=args.op_categories_path,
         template_range=(args.template_start, args.template_end),
         query_range=(args.query_start, args.query_end)
     )

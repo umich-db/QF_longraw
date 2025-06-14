@@ -1,11 +1,6 @@
 '''
-{TPCDS} Convert 2200 json&txt files (but only extracting txt parts) to a single csv file with [id, json] 
+Convert Spark EXPLAIN ANALYZE txt files to a single csv file with [id, json] 
 '''
-
-# Define the input folder (where .txt files are located) and the output folder (for .json files)
-# input_folder = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Spark_tpcds/results'
-# output_csv_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/QueryFormer/data/tpcds_2505/spark_10g/long_raw.csv'
-# op_categories_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Mysql_tpcds/operator_categories.json'
 
 import traceback
 import os
@@ -16,11 +11,10 @@ from copy import deepcopy
 import re
 import shutil
 
-from node import Node
-from merge_explain_outputs import merge_explain_outputs
-
+from parsers.spark_node import Node
+ 
 # sys.path.append(os.path.expanduser('~/Oct/src'))
-import utils_ms as utils_ms
+import parsers.utils_ms as utils_ms
 
 # some constant key names
 CHILDREN_KEY = "children"
@@ -856,38 +850,6 @@ def spark_raw_txt_to_json(infilepath):
 
     return all_queries_execution_time
      
-# def mysql_raw_txt_to_json(infilepath, op_categories_path):
-#     # load operator categories
-#     with open(op_categories_path, 'r', encoding='utf-8') as infile:
-#         op_categories = json.load(infile)
-#     # init the file parser
-#     parser = MysqlExplainParser(op_categories=op_categories)
-#     # parser = SparkExplainParser()
-#     # load raw plan text
-#     parser.load_raw_plans(infilepath)
-#     # parse the text into trees
-#     parser.parse_raw_plans()
-
-
-#     # Save each parsed plan after calculating total execution time
-#     all_queries_execution_time = []
-    
-#     for root in parser.parsed_plan_list:
-#         root_with_time = add_total_execution_time(root.to_json(), infilepath)
-#         postgres_style_plan = transform_to_postgres_style(root_with_time)
-#         cleaned_plan = remove_specific_filter_nodes(postgres_style_plan['Plan'])
-#         merged_plan = merge_filter_and_scan_nodes_recursive(cleaned_plan)
-#         filled_plan = fill_missing_parts(merged_plan)
-#         cleaned_filled_plan = remove_angle_bracket_content(filled_plan)
-
-#         # all_queries_execution_time.append({"Plan": merged_plan})
-#         all_queries_execution_time.append({
-#             "Plan": filled_plan,
-#             "Execution Time": postgres_style_plan["Execution Time"]
-#         })
-    
-#     return all_queries_execution_time
-
 def replace_null_with_zero(obj):
     """
     Recursively replace all None values with 0.0 in a nested dict or list.
@@ -901,16 +863,19 @@ def replace_null_with_zero(obj):
     else:
         return obj
 
-import argparse
+
 import os
 from tqdm import tqdm
 import csv
 from collections import defaultdict
 
+
+import argparse
 def process_files(input_folder, output_csv_path, template_range=(1, 101), query_range=(1, 11)):
     output_dir = os.path.dirname(output_csv_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+
     id_counter = 1
     missing_templates = []
     missing_queries = defaultdict(list)
