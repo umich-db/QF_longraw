@@ -12,10 +12,8 @@ import re
 import shutil
 
 from parsers.spark_node import Node
- 
 import parsers.utils_ms as utils_ms
 
-# some constant key names
 CHILDREN_KEY = "children"
 DATA_KEY = "data"
 OPERATOR_KEY = "operator"

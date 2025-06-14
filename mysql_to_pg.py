@@ -2,11 +2,6 @@
 Convert MySQL EXPLAIN ANALYZE json&txt files (but only extracting txt parts) to a single csv file with [id, json] 
 '''
 
-# Define the input folder (where .txt files are located) and the output folder (for .json files)
-# input_folder = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Mysql_tpcds'
-# output_csv_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/QueryFormer/data/tpcds_2505/mysql_10g/long_raw.csv'
-# op_categories_path = 'C:/Research/2023_Research/Foundation_Database/2025_05_code/Mysql_tpcds/operator_categories.json'
-
 import os
 import sys
 import json
@@ -17,10 +12,8 @@ import shutil
 
 from parsers.ms_node import Node, merge_explain_outputs
 
-# sys.path.append(os.path.expanduser('~/Oct/src'))
 import parsers.utils_ms as utils_ms
 
-# some constant key names
 CHILDREN_KEY = "children"
 DATA_KEY = "data"
 OPERATOR_KEY = "operator"
