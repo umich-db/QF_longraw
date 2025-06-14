@@ -10,7 +10,7 @@ from copy import deepcopy
 import re
 import shutil
 
-from parsers.ms_node import Node, merge_explain_outputs
+from parsers.node import Node, merge_explain_outputs
 
 import parsers.utils_ms as utils_ms
 
@@ -167,7 +167,7 @@ class MysqlPlanParser():
             leading_spaces = len(line) - len(line.lstrip(' '))
             leading_tabs = len(line) - len(line.lstrip('\t'))
             this_indent_level = leading_spaces + (leading_tabs * 4)  # Assume tabs count as 4 spaces
-            this_node = Node(line.strip())
+            this_node = Node(line.strip(),source='mysql')
 
 
             if (len(stack) > 0):

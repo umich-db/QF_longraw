@@ -11,7 +11,7 @@ from copy import deepcopy
 import re
 import shutil
 
-from parsers.spark_node import Node
+from parsers.node import Node
 import parsers.utils_ms as utils_ms
 
 CHILDREN_KEY = "children"
@@ -218,7 +218,7 @@ class PlanParser():
 
             # Create Node
             print("DEBUG: Before Node creation")
-            this_node = Node(line.strip())
+            this_node = Node(line.strip(),source='spark')
             print("DEBUG: After Node creation")
 
             this_node.extracted_data[OPERATOR_KEY] = op_name

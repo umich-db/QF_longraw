@@ -16,12 +16,13 @@ extractor_pattern_ = r"->\s?({op})({aux})?\s{{{two}}}(\((cost={num}(\.\.{num})?)
         two=2,
     )
 
-pattern = re.compile(pattern=extractor_pattern_)
+compiled_pattern = re.compile(pattern=extractor_pattern_)
 
-def extract_data_from_raw(raw_data):
-    info = None 
-    match = pattern.search(raw_data)
-    if match: # have data
+def extract_data_from_raw(raw_data, source='mysql'):
+    info = None
+    match = compiled_pattern.search(raw_data)
+
+    if match:  
         info = {
             "operator": match.group(1),
             "auxilary_info": match.group(2) if match.group(2) else None,
@@ -33,46 +34,50 @@ def extract_data_from_raw(raw_data):
             "actual_rows": float(match.group(38)) if match.group(38) else None,
             "actual_loops": float(match.group(44)) if match.group(44) else None,
         }
-    elif raw_data.strip() != "":
-        # Fallback for Spark-style lines: Extract operator and details
-        spark_match = re.match(r'([A-Za-z]+)\s*\[(.*)\]', raw_data)
-        if spark_match:
-            info = {
-                "operator": spark_match.group(1),
-                "op_details": spark_match.group(2)
-            }
-        else:
-            # If no brackets, treat entire line as operator (e.g., Filter lines)
-            first_word = raw_data.split(" ", 1)[0]
-            rest = raw_data[len(first_word):].strip()
-            info = {
-                "operator": first_word,
-                "op_details": rest
-            }
 
-        print(f"[DEBUG] Fallback for raw_data: {raw_data} -> operator: {info['operator']}, details: {info.get('op_details')}")
-    else:
-        return None
-    
+    elif raw_data.strip() != "":
+        if source == "spark":
+            # Spark fallback parsing: e.g. Project [fields...]
+            spark_match = re.match(r'([A-Za-z ]+)\s*\[(.*)\]', raw_data)
+            if spark_match:
+                info = {
+                    "operator": spark_match.group(1).strip(),
+                    "op_details": spark_match.group(2)
+                }
+            else:
+                # Try extracting the first token as operator
+                first_word = raw_data.split(" ", 1)[0]
+                rest = raw_data[len(first_word):].strip()
+                info = {
+                    "operator": first_word,
+                    "op_details": rest
+                }
+        else:
+            try:
+                info = {
+                    "operator": raw_data.split("-> ")[1]
+                }
+            except Exception as e:
+                print(f"error data:: {raw_data}")
+                raise e
+
     if info is None:
         raise ValueError(f"Info is None, raw_data: {raw_data}")
-    
-    # print(f"info: {info}")
-    return info # if info is not None else f"== unmatched == {raw_data}" # for debug
+    return info
+
 
 class Node():
-    def __init__(self, data=None):
+    def __init__(self, data=None, source='mysql'):
         # raw data and children node list
         self.raw_data = data
         self.children = []
-        # extract data if available
-        self.extracted_data = extract_data_from_raw(data)
+        self.source = source
+        self.extracted_data = extract_data_from_raw(data, source)
         # str
         self.tree_str = None
 
     def add_child(self, data: str):
-        new_node = Node(data)
-        self.children.append(new_node)
+        self.children.append(Node(data, source=self.source))
 
     def __str__(self):
         if (self.tree_str is None):
