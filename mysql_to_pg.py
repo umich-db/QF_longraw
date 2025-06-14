@@ -37,28 +37,6 @@ TRAINABLE_KEY = "trainable"
 EXE_KEY = "executed"
 NOT_EXE_KEY = "not_executed"
 
-row_cnt_dict = {
-    "orders": 15000000,
-    "lineitem": 59986052,
-    "region": 5,
-    "nation": 25,
-    "supplier": 100000,
-    "part": 2000000,
-    "partsupp": 8000000,
-    "customer": 1500000
-}
-
-alias_to_table = {
-    'n1': 'nation',
-    'n2': 'nation',
-    'o': 'orders',
-    'c': 'customer',
-    'ps': 'partsupp',
-    's': 'supplier',
-}
-
-table_list = ['nation','orders','region','supplier','part','partsupp','lineitem', 'customer']
-
 def reduce_opname(opname, keywords=[":", " on ", " using ", r" #\d+[a-zA-Z]", " with deduplication", r" \("]):
     # algorithm: only keep contents before all the keywords
     pattern = r'({})'.format('|'.join(keyword for keyword in keywords))
@@ -91,9 +69,6 @@ def update_operator_runtime(plan_node, op_categories):
     # calculate startup times and total time
     op_name = reduce_opname(plan_node.extracted_data[OPERATOR_KEY])
     table = extract_target_table(plan_node.extracted_data[OPERATOR_KEY])
-    # print(f"op_name: {op_name}")
-    # print(f"table: {table}")
-
 
     # for not-executed nodes
     if op_name in op_categories[NOT_EXE_KEY] or "never executed" in plan_node.extracted_data[OPERATOR_KEY]:
@@ -111,14 +86,9 @@ def update_operator_runtime(plan_node, op_categories):
         actual_time_end = float(plan_node.extracted_data.get(ACTUAL_TIME_END_KEY, 0.0))
         loops = float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1.0))
         
-        # print(f"Actual start time: {actual_time_start}, Actual end time: {actual_time_end}, Loops: {loops}")
-
         # Calculate operator time considering loops
         plan_node.extracted_data[OP_TIME_START_KEY] = actual_time_start * loops
         plan_node.extracted_data[OP_TIME_END_KEY] = actual_time_end * loops
-
-        # print(f"Calculated OP_TIME_START: {plan_node.extracted_data[OP_TIME_START_KEY]}")
-        # print(f"Calculated OP_TIME_END: {plan_node.extracted_data[OP_TIME_END_KEY]}")
 
         # Sum of subplan (child) execution times
         subplan_total_time = sum([subplan.extracted_data[OP_TIME_END_KEY] for subplan in plan_node.children]) if plan_node.children else 0.0
@@ -126,22 +96,11 @@ def update_operator_runtime(plan_node, op_categories):
         # Calculate operator's execution time (subtract child execution time from total)
         plan_node.extracted_data[OP_TIME_KEY] = plan_node.extracted_data[OP_TIME_END_KEY] - subplan_total_time
 
-        # print(f"Subplan total time: {subplan_total_time}")
-        # print(f"Operator time for {op_name} (excluding children): {plan_node.extracted_data[OP_TIME_KEY]}")
-        # print(f"Total time for {op_name} (including children): {plan_node.extracted_data[OP_TIME_END_KEY]}\n")
-
         # Update operator name and table name
         plan_node.extracted_data[OPERATOR_KEY] = op_name
         if table is not None:
             plan_node.extracted_data[utils_ms.TABLE_NAME_KEY] = table
 
-        # plan_node.extracted_data[OP_TIME_START_KEY] = float(plan_node.extracted_data.get(ACTUAL_TIME_START_KEY, 0)) * float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1))
-        # plan_node.extracted_data[OP_TIME_END_KEY] = float(plan_node.extracted_data.get(ACTUAL_TIME_END_KEY, 0)) * float(plan_node.extracted_data.get(ACTUAL_LOOPS_KEY, 1))
-        # subplan_total_time = sum([subplan.extracted_data[OP_TIME_END_KEY] for subplan in plan_node.children]) if (len(plan_node.children) > 0) else 0.0
-        # plan_node.extracted_data[OP_TIME_KEY] = plan_node.extracted_data[OP_TIME_END_KEY] - subplan_total_time
-        # plan_node.extracted_data[OPERATOR_KEY] = op_name
-        # if table is not None:
-        #     plan_node.extracted_data[utils_ms.TABLE_NAME_KEY] = table
     except KeyError as e:
         raise KeyError(f"error key: {e}, plan:\n{plan_node.data}") from e
 
@@ -150,11 +109,10 @@ def update_input_rows(plan_node):
         update_input_rows(plan_node=subplan)
     # 1. for leaf node, load the table row count from prepared external file
     # 2. for non-leaf node, pick the maximum estimate row count among children
-    if len(plan_node.children) == 0: # is leaf node
-        try:
-            plan_node.extracted_data[utils_ms.INPUT_ROWS_KEY] = row_cnt_dict.get(plan_node.extracted_data.get(utils_ms.TABLE_NAME_KEY), 0.0)
-        except KeyError:
-            plan_node.extracted_data[utils_ms.INPUT_ROWS_KEY] = float(plan_node.extracted_data.get(ROWS_KEY, 0.0)) if plan_node.extracted_data.get(ROWS_KEY) is not None else 0.0
+    if len(plan_node.children) == 0:  # is leaf node
+        plan_node.extracted_data[utils_ms.INPUT_ROWS_KEY] = float(
+            plan_node.extracted_data.get(ROWS_KEY, 0.0)
+        ) if plan_node.extracted_data.get(ROWS_KEY) is not None else 0.0
     else: # non-leaf
         try:
             estimate_rows = lambda subplan: subplan.extracted_data[ROWS_KEY] if ROWS_KEY in subplan.extracted_data else subplan.extracted_data[utils_ms.INPUT_ROWS_KEY]
@@ -199,11 +157,7 @@ class MysqlPlanParser():
                 else: # parent
                     stack[-1][0].children = deepcopy(children_buffer)
                     children_buffer.clear()
-            # print(f"Stack after merging:")
-            # for idx, (node, indent) in enumerate(stack):
-            #     print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
-            # print("\n")
-
+                    
         '''parse on plan chunks '''
         lines = plan_chuck.replace('\\n', '\n').splitlines()
         stack = deque()
@@ -217,18 +171,12 @@ class MysqlPlanParser():
             if ("EXPLAIN" in line):
                 continue
 
-            # count the indentation, decide whether it's a sibling or child
-            # this_indent_level = len(line) - len(line.lstrip(' \t')) # count of indentations ahead
-            
             leading_spaces = len(line) - len(line.lstrip(' '))
             leading_tabs = len(line) - len(line.lstrip('\t'))
             this_indent_level = leading_spaces + (leading_tabs * 4)  # Assume tabs count as 4 spaces
             this_node = Node(line.strip())
 
-            # print("Current Stack:")
-            # for idx, (node, indent) in enumerate(stack):
-                # print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
-                
+
             if (len(stack) > 0):
                 prev_indent_level = stack[-1][1]
                 if prev_indent_level > this_indent_level : # stack top is a child of its sibling among the stack
@@ -238,12 +186,6 @@ class MysqlPlanParser():
 
             else: # entry point 
                 stack.append((this_node, this_indent_level))
-
-            # Visualize the updated stack after each line is processed
-            # print("Updated Stack After Line:")
-            # for idx, (node, indent) in enumerate(stack):
-            #     print(f"  Stack[{idx}] -> Node: {node.extracted_data['operator']} (Indent Level: {indent})")
-            # print("\n")
 
         # merge the rest of the nodes in stack
         merge_stack(stack, 0)
@@ -262,11 +204,7 @@ class MysqlPlanParser():
 
 class MysqlPlanChuck:
     def __init__(self, raw_string):
-        # raw_string should contain EXPLAIN\n{...json}\nEXPLAIN\n->query plan nodes
-        # split at second EXPLAIN (stores index of second "EXPLAIN")
-        # split = [_ for _ in re.finditer('EXPLAIN', raw_string)][1].start()
-        # self.explain_output = raw_string[:split]
-        # self.explain_analyze_output = raw_string[split:]
+
         self.explain_output = None
         self.explain_analyze_output = raw_string
 
@@ -297,18 +235,6 @@ class MysqlExplainParser():
             # Split the remaining block into separate plans if needed
             out_list = explain_block.split('\n\n')  # This remains unchanged
             self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
-        
-        # ''' splits original files into chucks, each chuck refers to one plan. Return the list of chunks
-        # '''
-        # # print(f"Loading file: {filename}")
-        # with open(filename, 'r') as infile:
-        #     content = infile.read()
-        #     out_list = content.split('\n\n')
-        #     self.raw_plan_list = [MysqlPlanChuck(plan) for plan in out_list if not (plan.isspace() or len(plan) == 0)]
-        
-        # # for i, plan_chunk in enumerate(self.raw_plan_list[:5]):  # Limit the output to first 5 chunks for brevity
-        # #     print(f"Plan chunk {i+1}:\n{plan_chunk.explain_analyze_output}...\n")  
-   
 
     def parse_explain_output(self, explain_output):
         # Assume first line contains EXPLAIN, rest is valid JSON
@@ -325,18 +251,7 @@ class MysqlExplainParser():
             explain_output = {}
             plan_node = self.plan_parser.parse_one_plan(plan.explain_analyze_output)
             self.parsed_plan_list.append(merge_explain_outputs(explain_output, plan_node))
-
-    # def print_raw_plans(self):
-    #     for i, plan_txt in enumerate(self.raw_plan_list):
-    #         print(f"section {i}:")
-    #         print(plan_txt)
-
-    # def print_parsed_plans(self):
-    #     for i, plan_tree in enumerate(self.parsed_plan_list):
-    #         print(f"section {i}:")
-    #         print(plan_tree)
-
-
+            
 def add_total_execution_time(plan_json):
     """
     Given a query plan (parsed JSON), this function extracts the total execution
@@ -547,12 +462,7 @@ def infer_table_name_from_expression(expression):
     Infers potential table names from a SQL expression that could involve nested subqueries.
     """
     aliases = extract_alias_from_filter(expression)
-    inferred_relations = {
-        alias if alias in table_list else alias_to_table.get(alias)
-        for alias in aliases
-    }
-    inferred_relations = {relation for relation in inferred_relations if relation is not None}
-
+    inferred_relations = set(aliases)
     # inferred_relations = {alias_to_table.get(alias) for alias in aliases if alias in alias_to_table}
     return inferred_relations
 
