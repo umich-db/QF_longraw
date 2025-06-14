@@ -1,5 +1,5 @@
 # QF_longraw
-## Currently written for MySQL, DuckDB, Spark (both TPC-H and TPC-DS)
+### Currently written for databases MySQL, DuckDB, and Spark, with TPC-H and TPC-DS data supported
 Code for generating long_raw.csv for QueryFormer (to match the PostgreSQL EXPLAIN ANALYZE output format)
 
 To run the main scripts: 
